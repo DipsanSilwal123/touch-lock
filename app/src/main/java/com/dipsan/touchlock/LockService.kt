@@ -8,7 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
@@ -27,78 +26,126 @@ class LockService : Service() {
             unlock()
             return START_NOT_STICKY
         }
+
         startAsForeground()
         if (overlay == null) showOverlay()
         return START_NOT_STICKY
     }
 
     private fun startAsForeground() {
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(
-            NotificationChannel("lock", "Touch lock", NotificationManager.IMPORTANCE_LOW)
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        val channel = NotificationChannel(
+            NOTIFICATION_CHANNEL_ID,
+            "Touch lock",
+            NotificationManager.IMPORTANCE_LOW
         )
+        notificationManager.createNotificationChannel(channel)
+
         val unlockIntent = PendingIntent.getService(
-            this, 0,
+            this,
+            0,
             Intent(this, LockService::class.java).setAction(ACTION_UNLOCK),
             PendingIntent.FLAG_IMMUTABLE
         )
-        val n = Notification.Builder(this, "lock")
+
+        val notification = Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentTitle("Touch is locked")
             .setContentText("Double tap the screen to unlock")
             .addAction(Notification.Action.Builder(null, "Unlock", unlockIntent).build())
             .setOngoing(true)
             .build()
+
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
         } else {
-            startForeground(1, n)
+            startForeground(NOTIFICATION_ID, notification)
         }
     }
 
     private fun showOverlay() {
-        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        if (!android.provider.Settings.canDrawOverlays(this)) {
+            stopSelf()
+            return
+        }
+
+        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val detector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent) = true
+
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 unlock()
                 return true
             }
         })
+
         val view = View(this).apply {
-            setBackgroundColor(Color.TRANSPARENT)
             keepScreenOn = true
-            setOnTouchListener { _, e -> detector.onTouchEvent(e); true }
+            setOnTouchListener { _, event ->
+                detector.onTouchEvent(event)
+                true
+            }
         }
+
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        )
-        wm.addView(view, params)
-        overlay = view
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSPARENT
+        ).apply {
+            flags = flags or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
+        }
+
+        try {
+            windowManager.addView(view, params)
+            overlay = view
+        } catch (_: Exception) {
+            stopSelf()
+        }
     }
 
     private fun unlock() {
-        overlay?.let {
-            (getSystemService(Context.WINDOW_SERVICE) as WindowManager).removeView(it)
+        overlay?.let { view ->
+            try {
+                (getSystemService(Context.WINDOW_SERVICE) as WindowManager).removeView(view)
+            } catch (_: Exception) {
+                // The view may already have been removed.
+            }
         }
         overlay = null
-        stopForeground(STOP_FOREGROUND_REMOVE)
+
+        if (Build.VERSION.SDK_INT >= 24) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
         stopSelf()
     }
 
     override fun onDestroy() {
-        overlay?.let {
-            try { (getSystemService(Context.WINDOW_SERVICE) as WindowManager).removeView(it) } catch (_: Exception) {}
+        overlay?.let { view ->
+            try {
+                (getSystemService(Context.WINDOW_SERVICE) as WindowManager).removeView(view)
+            } catch (_: Exception) {
+                // The view may already have been removed.
+            }
         }
         overlay = null
         super.onDestroy()
     }
 
-    companion object { const val ACTION_UNLOCK = "com.dipsan.touchlock.UNLOCK" }
+    companion object {
+        const val ACTION_UNLOCK = "com.dipsan.touchlock.UNLOCK"
+        private const val NOTIFICATION_CHANNEL_ID = "touch_lock"
+        private const val NOTIFICATION_ID = 1
+    }
 }
